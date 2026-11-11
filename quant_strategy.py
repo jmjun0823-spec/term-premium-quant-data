@@ -2,20 +2,22 @@ import pandas as pd
 import numpy as np
 
 class MacroQuantStrategy:
-    def __init__(self, momentum_lookback=252):
+    def __init__(self, momentum_lookback=252, macro_lookback=63):
         self.lookback = momentum_lookback
+        # 시장의 최근 구조적 변화(Regime Change)를 빠르게 포착하기 위해 매크로 관찰 기간을 3개월(63일)로 설정
+        self.macro_lookback = macro_lookback 
         
     def calculate_risk_signals(self, df):
         """
-        1. 기간 프리미엄 급등 압력 (10년물 금리 반기 변동폭)
+        1. 기간 프리미엄 급등 압력 (3개월간 10년물 국채 금리 상승폭)
         2. 신용 스프레드(Credit Spread) 확대 위험 감지
         """
-        # 금리 0.5% 이상 급등 시그널
-        tp_pressure = df['US10Y'].diff(periods=126)
+        # 금리 발작 민감도 상향: 3개월간 금리가 0.1%p 이상 상승하면 기간 프리미엄 확대로 간주
+        tp_pressure = df['US10Y'].diff(periods=self.macro_lookback)
         
-        # 회사채(LQD)가 장기국채(TLT) 대비 가격이 더 떨어지면(언더퍼폼) 신용 스프레드 확대로 간주
+        # 회사채(LQD)가 장기국채(TLT) 대비 상대 모멘텀이 꺾일 때 크라우딩 아웃 위험으로 간주
         if 'CREDIT_CORP' in df.columns and 'US_BOND' in df.columns:
-            credit_health = (df['CREDIT_CORP'] / df['US_BOND']).pct_change(periods=126)
+            credit_health = (df['CREDIT_CORP'] / df['US_BOND']).pct_change(periods=self.macro_lookback)
         else:
             credit_health = pd.Series(1, index=df.index)
             
@@ -34,19 +36,20 @@ class MacroQuantStrategy:
         
         for i in range(len(df)):
             if i < self.lookback:
+                # 초기 데이터 확보 기간은 동일 비중 처리
                 signals.iloc[i] = [0.25, 0.25, 0.25, 0.25]
                 continue
                 
             kospi_m = momentum['KOSPI'].iloc[i]
             sp500_m = momentum['SP500'].iloc[i]
             
-            # 위험 시그널 포착
-            tp_up = tp_pressure.iloc[i] > 0.5        # 기간 프리미엄 발작
+            # 위험 시그널 포착 (민감도 조정 반영)
+            tp_up = tp_pressure.iloc[i] > 0.1        # 기간 프리미엄 발작 (금리 상승)
             credit_risk = credit_health.iloc[i] < 0  # 신용 스프레드 확대 (크라우딩 아웃)
             
             if tp_up or credit_risk:
                 # [논리 완벽 반영] 밸류에이션 충격 및 신용 경색 국면:
-                # 장기채 비중을 0%로 비우고, 고ROE 주식(KOSPI Barbell)과 초단기물(SHORT_DURATION)로 바벨 전략 구축
+                # 장기채 비중을 0%로 비우고, 고ROE 주식(KOSPI Barbell) 40%와 초단기물(SHORT_DURATION) 60%로 바벨 전략 구축
                 signals.iloc[i] = [0.4, 0.0, 0.6, 0.0]
             elif kospi_m > 0 and sp500_m > 0:
                 # 정상 장세: 주식 중심 Long 및 보험용 장기채 헷지
