@@ -25,7 +25,6 @@ def fetch_comprehensive_macro_data(start_date='2010-01-01', end_date=None):
         try:
             df = yf.download(ticker, start=start_date, end=end_date, progress=False)
             if not df.empty and 'Close' in df.columns:
-                # yfinance 최신 버전 다중 인덱스 반환 대비 처리
                 close_series = df['Close']
                 if isinstance(close_series, pd.DataFrame):
                     close_series = close_series.iloc[:, 0]
@@ -38,10 +37,8 @@ def fetch_comprehensive_macro_data(start_date='2010-01-01', end_date=None):
     if not data:
         raise ValueError("수집된 데이터가 없습니다. (야후 파이낸스 일시적 차단 또는 네트워크 에러)")
         
-    # Series 딕셔너리를 안전하게 DataFrame으로 병합
     df_merged = pd.DataFrame(data).dropna()
     
-    # US10Y 스케일 보정 (TNX는 10배 값으로 수집되므로 % 단위로 변환)
     if 'US10Y' in df_merged.columns:
         df_merged['US10Y'] = df_merged['US10Y'] / 10.0
         
@@ -49,11 +46,19 @@ def fetch_comprehensive_macro_data(start_date='2010-01-01', end_date=None):
 
 def fetch_domestic_market_details(start_date='20100101', end_date=None):
     """
-    pykrx를 활용하여 국내 KOSPI 시장의 거래대금 및 시가총액 등 심층 데이터를 추가 추출합니다.
+    pykrx를 활용하여 국내 시장 데이터를 추출하되, KRX IP 차단 시 파이프라인 중단을 방지합니다.
     """
     if end_date is None:
         end_date = datetime.today().strftime('%Y%m%d')
-    kospi_ohlcv = stock.get_index_ohlcv_by_date(start_date, end_date, "1001")
-    return kospi_ohlcv[['종가', '거래대금', '시가총액']].rename(
-        columns={'종가': 'KOSPI_Close', '거래대금': 'KOSPI_Volume_Amt', '시가총액': 'KOSPI_Market_Cap'}
-    )
+        
+    try:
+        kospi_ohlcv = stock.get_index_ohlcv_by_date(start_date, end_date, "1001")
+        if not kospi_ohlcv.empty and '종가' in kospi_ohlcv.columns:
+            return kospi_ohlcv[['종가', '거래대금', '시가총액']].rename(
+                columns={'종가': 'KOSPI_Close', '거래대금': 'KOSPI_Volume_Amt', '시가총액': 'KOSPI_Market_Cap'}
+            )
+    except Exception as e:
+        print(f"[Warning] KRX IP 차단 등으로 인해 pykrx 국내 데이터 수집을 건너뜁니다: {e}")
+        
+    # 에러 발생 시 빈 데이터프레임을 반환하여 메인 엔진이 중단되지 않도록 보호
+    return pd.DataFrame()
