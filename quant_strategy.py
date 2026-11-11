@@ -5,21 +5,32 @@ class MacroQuantStrategy:
     def __init__(self, momentum_lookback=252):
         self.lookback = momentum_lookback
         
-    def calculate_term_premium_signal(self, df):
+    def calculate_risk_signals(self, df):
         """
-        1. 기간 프리미엄(Term Premium) 및 10년 국채 금리 상승 압력 정량화
+        1. 기간 프리미엄 급등 압력 (10년물 금리 반기 변동폭)
+        2. 신용 스프레드(Credit Spread) 확대 위험 감지
         """
-        tp_pressure = df['US10Y'].diff(periods=126) # 반기 기준 금리 급등 압력
-        return tp_pressure
+        # 금리 0.5% 이상 급등 시그널
+        tp_pressure = df['US10Y'].diff(periods=126)
+        
+        # 회사채(LQD)가 장기국채(TLT) 대비 가격이 더 떨어지면(언더퍼폼) 신용 스프레드 확대로 간주
+        if 'CREDIT_CORP' in df.columns and 'US_BOND' in df.columns:
+            credit_health = (df['CREDIT_CORP'] / df['US_BOND']).pct_change(periods=126)
+        else:
+            credit_health = pd.Series(1, index=df.index)
+            
+        return tp_pressure, credit_health
 
     def generate_comprehensive_guidelines(self, df):
         """
-        블로그 본문의 5가지 핵심 가이드라인(Top-down, Long/Short, 바벨 전략, 듀레이션 관리)을 완벽히 수식화
+        블로그 본문 5번 항목 완벽 동기화:
+        - 듀레이션 관리: 주식/장기채 동반 하락(덫) 회피를 위해 초단기물(Short-duration) 비중 극대화
         """
         momentum = df.pct_change(periods=self.lookback)
-        tp_pressure = self.calculate_term_premium_signal(df)
+        tp_pressure, credit_health = self.calculate_risk_signals(df)
         
-        signals = pd.DataFrame(index=df.index, columns=['KOSPI_BARBELL', 'SP500_GROWTH', 'US_LONG_BOND', 'CASH_DEFENSE'])
+        # 포트폴리오 비중: 주식 바벨(KOSPI), 성장주(SP500), 초단기물(SHORT_DURATION), 장기채(US_LONG_BOND)
+        signals = pd.DataFrame(index=df.index, columns=['KOSPI_BARBELL', 'SP500_GROWTH', 'SHORT_DURATION', 'US_LONG_BOND'])
         
         for i in range(len(df)):
             if i < self.lookback:
@@ -28,16 +39,20 @@ class MacroQuantStrategy:
                 
             kospi_m = momentum['KOSPI'].iloc[i]
             sp500_m = momentum['SP500'].iloc[i]
-            tp_up = tp_pressure.iloc[i] > 0.5 # 기간 프리미엄 급등 국면 (금리 0.5% 이상 급등)
             
-            if tp_up and sp500_m < 0:
-                # 밸류에이션 충격 (멀티플 콘트랙션) 및 크레딧 리스크 확대 국면 -> 바벨 전략 (고ROE 퀄리티 주식 + 단기채/현금 대피)
-                signals.iloc[i] = [0.4, 0.0, 0.2, 0.4]
+            # 위험 시그널 포착
+            tp_up = tp_pressure.iloc[i] > 0.5        # 기간 프리미엄 발작
+            credit_risk = credit_health.iloc[i] < 0  # 신용 스프레드 확대 (크라우딩 아웃)
+            
+            if tp_up or credit_risk:
+                # [논리 완벽 반영] 밸류에이션 충격 및 신용 경색 국면:
+                # 장기채 비중을 0%로 비우고, 고ROE 주식(KOSPI Barbell)과 초단기물(SHORT_DURATION)로 바벨 전략 구축
+                signals.iloc[i] = [0.4, 0.0, 0.6, 0.0]
             elif kospi_m > 0 and sp500_m > 0:
-                # 정상 장세: 주식 중심 Long 및 듀레이션 관리
-                signals.iloc[i] = [0.4, 0.4, 0.2, 0.0]
+                # 정상 장세: 주식 중심 Long 및 보험용 장기채 헷지
+                signals.iloc[i] = [0.4, 0.4, 0.0, 0.2]
             else:
-                # Risk-Off 방어 국면: 미국 장기채 및 안전자산 비중 확대
-                signals.iloc[i] = [0.0, 0.0, 0.6, 0.4]
+                # 단순 경기 둔화 (전통적 하락장): 전통 안전자산(미국 장기채)으로 방어
+                signals.iloc[i] = [0.0, 0.0, 0.2, 0.8]
                 
         return signals.astype(float)
